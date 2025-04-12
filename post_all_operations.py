@@ -1,8 +1,8 @@
 import NXOpen
 import NXOpen.CAM
+import os
 
 def is_setup_group(group_name):
-    # Определяем, является ли группа группой установки
     return (group_name.startswith("SETUP-") or 
             group_name.startswith("SETUP_") or
             group_name.startswith("УСТАНОВ-") or
@@ -18,22 +18,43 @@ def print_group_structure(group, level, listing_window, processed_groups):
     if group in processed_groups:
         return
     processed_groups.add(group)
-    
+
     indent = "    " * level
     listing_window.WriteLine(f"{indent}- {group.Name}")
 
     try:
         for obj in group.GetMembers():
             if isinstance(obj, NXOpen.CAM.NCGroup):
-                # Для групп установок печатаем все вложенные группы полностью
                 if level == 0 or is_setup_group(group.Name) or level > 0:
                     print_group_structure(obj, level + 1, listing_window, processed_groups)
-            else:
-                # Печатаем операции для всех уровней вложенности
-                # listing_window.WriteLine(f"{indent}    • {obj.Name}")
-                return
     except Exception as e:
         listing_window.WriteLine(f"{indent}    [Ошибка: {str(e)}]")
+
+def list_postprocessors_from_template():
+    posts = []
+    # Пример пути, можно подкорректировать под твою версию NX
+    nx_root = os.environ.get("UGII_ROOT_DIR", r"C:\Program Files\Siemens\NX2406")
+    template_path = os.path.join(nx_root, "MACH", "resource", "postprocessor", "template_post.dat")
+
+    if not os.path.exists(template_path):
+        return ["[Файл template_post.dat не найден]"]
+
+    try:
+        with open(template_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split(",")
+                if len(parts) >= 2:
+                    post_name = parts[0].strip()
+                    tcl_path = parts[1].strip()
+                    tcl_file = os.path.basename(tcl_path.replace("${UGII_CAM_POST_DIR}", ""))
+                    posts.append(f"{post_name} -> {tcl_file}")
+    except Exception as e:
+        posts.append(f"[Ошибка чтения template_post.dat: {str(e)}]")
+
+    return posts
 
 def main():
     the_session = NXOpen.Session.GetSession()
@@ -42,7 +63,6 @@ def main():
 
     try:
         work_part = the_session.Parts.Work
-
         if not work_part:
             listing_window.WriteLine("ОШИБКА: Нет открытой рабочей детали!")
             return
@@ -56,13 +76,16 @@ def main():
         listing_window.WriteLine("Структура CAM-групп:")
 
         processed_groups = set()
-        
-        # Выводим только группы установок и их полную иерархию
         for group in cam_setup.CAMGroupCollection:
             if is_setup_group(group.Name):
                 print_group_structure(group, 0, listing_window, processed_groups)
 
-        listing_window.WriteLine("=== Конец вывода ===")
+        listing_window.WriteLine("\nДоступные постпроцессоры:")
+        posts = list_postprocessors_from_template()
+        for post in posts:
+            listing_window.WriteLine(f"  {post}")
+
+        listing_window.WriteLine("\n=== Конец вывода ===")
 
     except Exception as e:
         listing_window.WriteLine(f"КРИТИЧЕСКАЯ ОШИБКА: {str(e)}")
