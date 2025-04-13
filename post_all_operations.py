@@ -1,94 +1,92 @@
+import os
+import shutil
 import NXOpen
 import NXOpen.CAM
-import os
 
-def is_setup_group(group_name):
-    return (group_name.startswith("SETUP-") or 
-            group_name.startswith("SETUP_") or
-            group_name.startswith("УСТАНОВ-") or
-            group_name.startswith("УСТАНОВ_") or
-            group_name.startswith("SETTING-") or
-            group_name.startswith("SETTING_") or
-            group_name.startswith("SET-") or
-            group_name.startswith("SET_") or
-            group_name.startswith("УСТ_") or
-            group_name.startswith("УСТ-"))
+def get_cam_structure(group, indent=0):
+    result = ""
+    prefix = "    " * indent + "- "
+    result += f"{prefix}{group.Name}\n"
+    children = group.GetMembers()
+    for child in children:
+        if isinstance(child, NXOpen.CAM.NCGroup):
+            result += get_cam_structure(child, indent + 1)
+    return result
 
-def print_group_structure(group, level, listing_window, processed_groups):
-    if group in processed_groups:
-        return
-    processed_groups.add(group)
-
-    indent = "    " * level
-    listing_window.WriteLine(f"{indent}- {group.Name}")
-
+def get_postprocessors_from_template(template_path):
+    post_names = []
     try:
-        for obj in group.GetMembers():
-            if isinstance(obj, NXOpen.CAM.NCGroup):
-                if level == 0 or is_setup_group(group.Name) or level > 0:
-                    print_group_structure(obj, level + 1, listing_window, processed_groups)
-    except Exception as e:
-        listing_window.WriteLine(f"{indent}    [Ошибка: {str(e)}]")
-
-def list_postprocessors_from_template():
-    posts = []
-    # Пример пути, можно подкорректировать под твою версию NX
-    nx_root = os.environ.get("UGII_ROOT_DIR", r"C:\Program Files\Siemens\NX2406")
-    template_path = os.path.join(nx_root, "MACH", "resource", "postprocessor", "template_post.dat")
-
-    if not os.path.exists(template_path):
-        return ["[Файл template_post.dat не найден]"]
-
-    try:
-        with open(template_path, "r", encoding="utf-8") as f:
+        with open(template_path, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                parts = line.split(",")
-                if len(parts) >= 2:
-                    post_name = parts[0].strip()
-                    tcl_path = parts[1].strip()
-                    tcl_file = os.path.basename(tcl_path.replace("${UGII_CAM_POST_DIR}", ""))
-                    posts.append(f"{post_name} -> {tcl_file}")
+                if line and not line.startswith('#'):
+                    parts = line.split(',')
+                    if len(parts) >= 3:
+                        post_names.append(parts[0])
     except Exception as e:
-        posts.append(f"[Ошибка чтения template_post.dat: {str(e)}]")
+        post_names.append(f"[Ошибка при чтении template_post.dat: {str(e)}]")
+    return post_names
 
-    return posts
+def create_output_folder_on_desktop(folder_name="Output_Programs"):
+    desktop_path = os.path.join(os.path.join(os.environ["USERPROFILE"]), "Desktop")
+    output_path = os.path.join(desktop_path, folder_name)
+    if os.path.exists(output_path):
+        shutil.rmtree(output_path)
+    os.makedirs(output_path)
+    return output_path
+
+def save_log_file(output_path, content):
+    log_path = os.path.join(output_path, "log.txt")
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+def postprocess_setup1(work_part, cam_setup, output_path, listing_window):
+    try:
+        program_group = cam_setup.CAMGroupCollection.FindObject("SETUP-1")
+        if not program_group:
+            listing_window.WriteLine("CAM группа SETUP-1 не найдена.")
+            return
+
+        builder = NXOpen.CAM.Postprocess.CreatePostprocessBuilder(work_part)
+        builder.SetProgramGroup(program_group)
+        builder.Postprocessor = "HAAS-VF2"
+        builder.OutputFile = os.path.join(output_path, "SETUP-1.nc")
+        builder.Commit()
+        builder.Destroy()
+        listing_window.WriteLine("Постпроцессинг SETUP-1 завершен.")
+    except Exception as e:
+        listing_window.WriteLine(f"[Ошибка постпроцессинга SETUP-1: {str(e)}]")
 
 def main():
     the_session = NXOpen.Session.GetSession()
+    work_part = the_session.Parts.Work
+    cam_setup = work_part.CAMSetup
     listing_window = the_session.ListingWindow
     listing_window.Open()
 
+    output_folder = create_output_folder_on_desktop()
+
+    result = f"Имя детали: {work_part.Leaf}\n"
     try:
-        work_part = the_session.Parts.Work
-        if not work_part:
-            listing_window.WriteLine("ОШИБКА: Нет открытой рабочей детали!")
-            return
-
-        cam_setup = work_part.CAMSetup
-        if not cam_setup:
-            listing_window.WriteLine("ОШИБКА: CAM не активирован!")
-            return
-
-        listing_window.WriteLine(f"Имя детали: {work_part.Name}")
-        listing_window.WriteLine("Структура CAM-групп:")
-
-        processed_groups = set()
-        for group in cam_setup.CAMGroupCollection:
-            if is_setup_group(group.Name):
-                print_group_structure(group, 0, listing_window, processed_groups)
-
-        listing_window.WriteLine("\nДоступные постпроцессоры:")
-        posts = list_postprocessors_from_template()
-        for post in posts:
-            listing_window.WriteLine(f"  {post}")
-
-        listing_window.WriteLine("\n=== Конец вывода ===")
-
+        root_group = cam_setup.CAMGroupCollection.RootGroup
+        result += "Структура CAM-групп:\n"
+        result += get_cam_structure(root_group)
     except Exception as e:
-        listing_window.WriteLine(f"КРИТИЧЕСКАЯ ОШИБКА: {str(e)}")
+        result += f"[Ошибка при получении структуры CAM-групп: {str(e)}]\n"
+
+    try:
+        template_path = r"C:\\Program Files\\Siemens\\NX2406\\MACH\\resource\\postprocessor\\template_post.dat"
+        post_list = get_postprocessors_from_template(template_path)
+        result += "\nДоступные постпроцессоры:\n"
+        for post in post_list:
+            result += f"  {post}\n"
+    except Exception as e:
+        result += f"[Ошибка при получении постпроцессоров: {str(e)}]\n"
+
+    save_log_file(output_folder, result)
+    listing_window.WriteLine(result)
+
+    postprocess_setup1(work_part, cam_setup, output_folder, listing_window)
 
 if __name__ == "__main__":
     main()
