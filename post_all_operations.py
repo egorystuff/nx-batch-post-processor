@@ -13,9 +13,29 @@ SETUP_PREFIXES = [
 NX_ROOT_DEFAULT = r"C:\Program Files\Siemens\NX2306"
 POSTPROCESSOR_CACHE = None
 
+# -----------------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------------
+
+def create_output_folder():
+    """Создает папку Program output на рабочем столе, если ее нет"""
+    desktop_path = os.path.join(os.path.expanduser("~"), "Desktop")
+    output_folder = os.path.join(desktop_path, "Program output")
+    
+    if not os.path.exists(output_folder):
+        try:
+            os.makedirs(output_folder)
+        except Exception as e:
+            pass  # Не выводим ошибку, если не удалось создать папку
+        
+# -----------------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------------
+
 def is_setup_group(group_name):
     """Определяет, является ли группа SETUP-группой"""
     return any(group_name.startswith(prefix) for prefix in SETUP_PREFIXES)
+
+# -----------------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------------
 
 def print_setup_structure(group, listing_window, processed_setups):
     """Выводит структуру SETUP-группы с операциями (только первый уровень)"""
@@ -36,6 +56,9 @@ def print_setup_structure(group, listing_window, processed_setups):
                     listing_window.WriteLine(f"    - {obj.Name}")
     except Exception as e:
         listing_window.WriteLine(f"    [Ошибка: {str(e)}]")
+
+# -----------------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------------
 
 def list_postprocessors_from_template():
     """Возвращает список доступных постпроцессоров"""
@@ -65,7 +88,14 @@ def list_postprocessors_from_template():
         POSTPROCESSOR_CACHE = [f"[Ошибка чтения: {str(e)}"]
     return POSTPROCESSOR_CACHE
 
+# -----------------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------------
+# main functions
+
 def main():
+    # Создаем папку для вывода перед выполнением основной логики
+    create_output_folder()
+    
     the_session = NXOpen.Session.GetSession()
     listing_window = the_session.ListingWindow
     listing_window.Open()
