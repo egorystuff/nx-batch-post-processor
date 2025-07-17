@@ -3,18 +3,10 @@ import NXOpen.CAM
 import os
 
 # Константы
-SETUP_PREFIXES = [
-    "SETUP-", "SETUP_",
-    "УСТАНОВ-", "УСТАНОВ_",
-    "SETTING-", "SETTING_",
-    "SET-", "SET_",
-    "УСТ_", "УСТ-"
-]
 NX_ROOT_DEFAULT = r"C:\Program Files\Siemens\NX2306"
 POSTPROCESSOR_CACHE = None
-
-# -----------------------------------------------------------------------------------------------------------------------
-# -----------------------------------------------------------------------------------------------------------------------
+SETUP_PREFIXES = ["SETUP-", "SETUP_", "УСТАНОВ-", "УСТАНОВ_"]
+EXCLUDE_SUBGROUPS = ["WORKPIECE-SET-", "ROTARY_GEOM", "WORKPIECE_"]
 
 def create_output_folder():
     """Создает папку Program output на рабочем столе, если ее нет"""
@@ -25,40 +17,7 @@ def create_output_folder():
         try:
             os.makedirs(output_folder)
         except Exception as e:
-            pass  # Не выводим ошибку, если не удалось создать папку
-        
-# -----------------------------------------------------------------------------------------------------------------------
-# -----------------------------------------------------------------------------------------------------------------------
-
-def is_setup_group(group_name):
-    """Определяет, является ли группа SETUP-группой"""
-    return any(group_name.startswith(prefix) for prefix in SETUP_PREFIXES)
-
-# -----------------------------------------------------------------------------------------------------------------------
-# -----------------------------------------------------------------------------------------------------------------------
-
-def print_setup_structure(group, listing_window, processed_setups):
-    """Выводит структуру SETUP-группы с операциями (только первый уровень)"""
-    if group.Name in processed_setups:
-        return
-    processed_setups.add(group.Name)
-
-    listing_window.WriteLine(f"- {group.Name}")
-
-    try:
-        for obj in group.GetMembers():
-            if isinstance(obj, NXOpen.CAM.Operation):
-                # Выводим только операции первого уровня
-                listing_window.WriteLine(f"    - {obj.Name}")
-            elif isinstance(obj, NXOpen.CAM.NCGroup):
-                # Для вложенных групп выводим только их название (без содержимого)
-                if not obj.Name.startswith("WORKPIECE-SET-"):
-                    listing_window.WriteLine(f"    - {obj.Name}")
-    except Exception as e:
-        listing_window.WriteLine(f"    [Ошибка: {str(e)}]")
-
-# -----------------------------------------------------------------------------------------------------------------------
-# -----------------------------------------------------------------------------------------------------------------------
+            pass
 
 def list_postprocessors_from_template():
     """Возвращает список доступных постпроцессоров"""
@@ -88,12 +47,44 @@ def list_postprocessors_from_template():
         POSTPROCESSOR_CACHE = [f"[Ошибка чтения: {str(e)}"]
     return POSTPROCESSOR_CACHE
 
-# -----------------------------------------------------------------------------------------------------------------------
-# -----------------------------------------------------------------------------------------------------------------------
-# main functions
+def is_setup_group(group_name):
+    """Проверяет, является ли группа SETUP-группой"""
+    group_name_upper = group_name.upper()
+    return any(group_name_upper.startswith(prefix.upper()) for prefix in SETUP_PREFIXES)
+
+def should_exclude_group(group_name):
+    """Проверяет, нужно ли исключить группу из вывода"""
+    group_name_upper = group_name.upper()
+    return any(group_name_upper.startswith(prefix.upper()) for prefix in EXCLUDE_SUBGROUPS)
+
+def print_operation(op, listing_window, level):
+    """Выводит информацию об операции"""
+    indent = "    " * level
+    op_type = getattr(op, "TemplateOperationType", "UNKNOWN")
+    listing_window.WriteLine(f"{indent}- {op.Name} ({op_type})")
+
+def traverse_setup_group(group, listing_window, level=0, is_main_setup=True):
+    """Рекурсивный обход SETUP-группы с фильтрацией"""
+    indent = "    " * level
+    
+    # Выводим только основные SETUP-группы и их непосредственные подгруппы
+    if is_main_setup or not should_exclude_group(group.Name):
+        listing_window.WriteLine(f"{indent}+ {group.Name} (NCGroup)")
+    
+    try:
+        for member in group.GetMembers():
+            if isinstance(member, NXOpen.CAM.Operation):
+                if is_main_setup or not should_exclude_group(group.Name):
+                    print_operation(member, listing_window, level + 1)
+            elif isinstance(member, NXOpen.CAM.NCGroup):
+                # Пропускаем группы с геометрией и другими служебными элементами
+                if not should_exclude_group(member.Name):
+                    traverse_setup_group(member, listing_window, level + 1, False)
+    except Exception as e:
+        listing_window.WriteLine(f"{indent}  [Ошибка: {str(e)}]")
 
 def main():
-    # Создаем папку для вывода перед выполнением основной логики
+    """Основная функция"""
     create_output_folder()
     
     the_session = NXOpen.Session.GetSession()
@@ -111,24 +102,37 @@ def main():
             listing_window.WriteLine("ОШИБКА: CAM не активирован!")
             return
 
-        listing_window.WriteLine(f"Имя детали: {work_part.Name}")
-        listing_window.WriteLine("Структура CAM-групп:")
-
-        processed_setups = set()  # Для отслеживания уже обработанных SETUP-групп
+        listing_window.WriteLine(f"\nДеталь: {work_part.Name}")
+        listing_window.WriteLine("="*50)
+        listing_window.WriteLine("Структура CAM (основные SETUP группы и операции):")
         
-        # Обрабатываем только SETUP-группы верхнего уровня
-        for group in cam_setup.CAMGroupCollection:
-            if is_setup_group(group.Name):
-                print_setup_structure(group, listing_window, processed_setups)
-
-        listing_window.WriteLine("\nДоступные постпроцессоры:")
+        # Собираем и сортируем SETUP-группы верхнего уровня
+        setup_groups = []
+        for obj in cam_setup.CAMGroupCollection:
+            if isinstance(obj, NXOpen.CAM.NCGroup) and is_setup_group(obj.Name):
+                setup_groups.append(obj)
+        
+        # Сортируем группы по имени для последовательного вывода
+        setup_groups.sort(key=lambda x: x.Name)
+        
+        # Выводим только основные SETUP-группы и их операции
+        processed_groups = set()
+        for group in setup_groups:
+            if group.Name not in processed_groups:
+                traverse_setup_group(group, listing_window)
+                processed_groups.add(group.Name)
+        
+        # Вывод постпроцессоров
+        listing_window.WriteLine("\n" + "="*50)
+        listing_window.WriteLine("Доступные постпроцессоры:")
         for post in list_postprocessors_from_template():
             listing_window.WriteLine(f"  {post}")
-
-        listing_window.WriteLine("\n=== Конец вывода ===")
+        
+        listing_window.WriteLine("\n" + "="*50)
+        listing_window.WriteLine("Анализ завершен")
 
     except Exception as e:
-        listing_window.WriteLine(f"КРИТИЧЕСКАЯ ОШИБКА: {str(e)}")
+        listing_window.WriteLine(f"\nКРИТИЧЕСКАЯ ОШИБКА: {str(e)}")
 
 if __name__ == "__main__":
     main()
