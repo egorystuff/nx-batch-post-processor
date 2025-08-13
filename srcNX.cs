@@ -1,10 +1,10 @@
-// CamStructureViewer.cs
+// CamProgramStructureViewer_FromSelection_FixedOperation.cs
 using System;
 using System.Text;
 using NXOpen;
 using NXOpen.CAM;
 
-public class CamStructureViewer
+public class CamProgramStructureViewer_FromSelection_FixedOperation
 {
     public static Session theSession;
     public static UI theUI;
@@ -33,95 +33,154 @@ public class CamStructureViewer
             }
 
             CAMSetup setup = workPart.CAMSetup;
-            StringBuilder sb = new StringBuilder();
 
-            sb.AppendLine("=== CAM STRUCTURE ===");
-            sb.AppendLine();
+            // 1) Берём первый выделенный объект
+            int selCount = 0;
+            try { selCount = theUI.SelectionManager.GetNumSelectedObjects(); } catch { selCount = 0; }
 
-            // Перечислим view, которые хотим обойти
-            CAMSetup.View[] views = new CAMSetup.View[] {
-                CAMSetup.View.ProgramOrder,
-                // CAMSetup.View.MachineMethod,
-                // CAMSetup.View.Geometry,
-                // CAMSetup.View.MachineTool
-            };
-
-            foreach (CAMSetup.View view in views)
+            if (selCount == 0)
             {
-                sb.AppendLine("---- VIEW: " + view.ToString() + " ----");
+                theUI.NXMessageBox.Show("Выделение",
+                    NXMessageBox.DialogType.Warning,
+                    "Ничего не выделено в CAM Navigator. Выберите программу (NCGroup) или операцию внутри неё.");
+                return;
+            }
+
+            TaggedObject selected = theUI.SelectionManager.GetSelectedTaggedObject(0);
+
+            // 2) Определяем стартовую группу:
+            NCGroup startGroup = selected as NCGroup;
+            if (startGroup == null)
+            {
+                NXOpen.CAM.Operation selOp = selected as NXOpen.CAM.Operation;
+                if (selOp == null)
+                {
+                    theUI.NXMessageBox.Show("CAM Program Structure",
+                        NXMessageBox.DialogType.Warning,
+                        "Выберите NCGroup (программу) или операцию внутри программы.");
+                    return;
+                }
+
                 NCGroup root = null;
-                try
-                {
-                    root = setup.GetRoot(view);
-                }
-                catch
-                {
-                    root = null;
-                }
+                try { root = setup.GetRoot(CAMSetup.View.ProgramOrder); } catch { root = null; }
 
                 if (root == null)
                 {
-                    sb.AppendLine("  <root is empty or inaccessible>");
-                }
-                else
-                {
-                    PrintNCGroup(root, sb, 0);
+                    theUI.NXMessageBox.Show("CAM Program Structure",
+                        NXMessageBox.DialogType.Error,
+                        "Не удалось получить корень ProgramOrder.");
+                    return;
                 }
 
-                sb.AppendLine();
+                startGroup = FindOwningGroupForOperation(root, selOp);
+                if (startGroup == null)
+                {
+                    theUI.NXMessageBox.Show("CAM Program Structure",
+                        NXMessageBox.DialogType.Warning,
+                        "Не удалось найти группу, содержащую выбранную операцию.");
+                    return;
+                }
             }
 
-            // Пишем в Listing Window (удобно для копирования/длинных списков)
+            // 3) Печатаем ТОЛЬКО структуру групп, начиная с найденной
+            StringBuilder sb = new StringBuilder();
+            sb.AppendLine("=== STRUCTURE (FROM SELECTED GROUP) ===");
+            sb.AppendLine();
+            sb.AppendLine("- " + SafeName(startGroup));
+            PrintChildGroups(startGroup, sb, 1);
+
             theSession.ListingWindow.WriteLine(sb.ToString());
 
-            // Короткое подтверждение в модальном окне
-            theUI.NXMessageBox.Show("CAM Structure", NXMessageBox.DialogType.Information,
-                "Структура CAM выведена в Listing Window.");
+            // theUI.NXMessageBox.Show("CAM Program Structure",
+            //     NXMessageBox.DialogType.Information,
+            //     "Структура выбранной программы/группы выведена в Listing Window.");
+
+
+
+            
         }
         catch (Exception ex)
         {
-            UI.GetUI().NXMessageBox.Show("CamStructureViewer - Error", NXMessageBox.DialogType.Error, ex.ToString());
+            UI.GetUI().NXMessageBox.Show("CamProgramStructureViewer - Error",
+                NXMessageBox.DialogType.Error, ex.ToString());
         }
     }
 
-    // Рекурсивный обход NCGroup
-    private static void PrintNCGroup(NCGroup group, StringBuilder sb, int indent)
+    /// <summary>
+    /// Рекурсивный поиск ближайшей группы, которая содержит данную операцию.
+    /// </summary>
+    private static NCGroup FindOwningGroupForOperation(NCGroup group, NXOpen.CAM.Operation targetOp)
+    {
+        if (group == null || targetOp == null) return null;
+
+        CAMObject[] members = null;
+        try { members = group.GetMembers(); } catch { members = null; }
+
+        if (members == null || members.Length == 0) return null;
+
+        // Сначала проверим прямых детей
+        for (int i = 0; i < members.Length; i++)
+        {
+            CAMObject m = members[i];
+            if (m == null) continue;
+
+            NXOpen.CAM.Operation op = m as NXOpen.CAM.Operation;
+            if (op != null)
+            {
+                if (object.ReferenceEquals(op, targetOp) || op == targetOp)
+                    return group;
+            }
+        }
+
+        // Затем углубляемся в подгруппы
+        for (int i = 0; i < members.Length; i++)
+        {
+            CAMObject m = members[i];
+            if (m == null) continue;
+
+            NCGroup childGroup = m as NCGroup;
+            if (childGroup != null)
+            {
+                NCGroup found = FindOwningGroupForOperation(childGroup, targetOp);
+                if (found != null) return found;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Печатает только дочерние NCGroup’ы рекурсивно (операции и прочее игнорируются).
+    /// </summary>
+    private static void PrintChildGroups(NCGroup group, StringBuilder sb, int indent)
     {
         if (group == null) return;
 
-        string prefix = new string(' ', indent * 2);
-        string groupName = SafeName(group);
-        sb.AppendLine(prefix + "- " + groupName );
-
         CAMObject[] members = null;
-        try { members = group.GetMembers(); }
-        catch { members = null; }
+        try { members = group.GetMembers(); } catch { members = null; }
 
         if (members == null || members.Length == 0) return;
 
-        foreach (CAMObject camObj in members)
+        string prefix = new string(' ', indent * 2);
+
+        for (int i = 0; i < members.Length; i++)
         {
+            CAMObject camObj = members[i];
             if (camObj == null) continue;
 
-            string objName = SafeName(camObj);
-            string typeName = camObj.GetType().Name;
-
-            // Если вложенная группа — рекурсивно углубляемся
-            if (camObj is NCGroup)
+            NCGroup childGroup = camObj as NCGroup;
+            if (childGroup != null)
             {
-                PrintNCGroup((NCGroup)camObj, sb, indent + 1);
+                sb.AppendLine(prefix + "- " + SafeName(childGroup));
+                PrintChildGroups(childGroup, sb, indent + 1);
             }
-     
-        
         }
     }
 
-    // Безопасное чтение имени объекта CAM (Name у CAMObject обычно доступно)
     private static string SafeName(CAMObject obj)
     {
         try
         {
-            // CAMObject наследует NXObject, у которого есть Name
             return string.IsNullOrEmpty(obj.Name) ? "<unnamed>" : obj.Name;
         }
         catch
