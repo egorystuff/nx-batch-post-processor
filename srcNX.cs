@@ -1,14 +1,42 @@
-// CamProgramStructureViewer_FromSelection_FixedOperation.cs
+// CamProgram_BatchPostprocess_3Posts_Fixed.cs
+// Для каждой подпрограммы выбранной группы выполняет постпроцессинг тремя постпроцессорами.
+// Файлы сохраняются на рабочем столе в папку "Prog output" с расширениями .i, .min, .txt.
+// Опция перезаписи: Да / Нет / Спрашивать каждый раз.
+
 using System;
-using System.Text;
+using System.Windows.Forms;
+using SysIO = System.IO;
 using NXOpen;
 using NXOpen.CAM;
 
-public class CamProgramStructureViewer_FromSelection_FixedOperation
+public class CamProgram_BatchPostprocess_3Posts_Fixed
 {
     public static Session theSession;
     public static UI theUI;
     public static Part workPart;
+
+    // Небольший класс вместо кортежа — чтобы гарантированно компилировалось в старых средах
+    private class PostConfig
+    {
+        public string PostName;
+        public string Extension;
+        public PostConfig(string postName, string extension)
+        {
+            PostName = postName;
+            Extension = extension;
+        }
+    }
+
+    // Жёстко заданные постпроцессоры и расширения
+    private static readonly PostConfig[] PostConfigs = new PostConfig[]
+    {
+        new PostConfig("DMU-60T", ".i"),
+        new PostConfig("OKUMA_MB-46VAE_3X", ".min"),
+        new PostConfig("HAAS-VF2", ".txt")
+    };
+
+    // Опция перезаписи: -1 = ещё не спрашивали, 0 = никогда, 1 = всегда, -2 = спрашивать каждый раз
+    private static int overwriteChoice = -1;
 
     public static void Main(string[] args)
     {
@@ -18,96 +46,191 @@ public class CamProgramStructureViewer_FromSelection_FixedOperation
             theUI = UI.GetUI();
             workPart = theSession.Parts.Work;
 
-            theSession.ListingWindow.Open();
-
             if (workPart == null)
             {
-                theSession.ListingWindow.WriteLine("Нет активной детали (work part).");
+                theUI.NXMessageBox.Show("Ошибка", NXMessageBox.DialogType.Error, "Нет активной детали (work part).");
                 return;
             }
 
             if (workPart.CAMSetup == null)
             {
-                theSession.ListingWindow.WriteLine("CAM-сессия не загружена в текущем файле.");
+                theUI.NXMessageBox.Show("Ошибка", NXMessageBox.DialogType.Error, "CAM-сессия не загружена в текущем файле.");
                 return;
             }
 
-            CAMSetup setup = workPart.CAMSetup;
-
-            // 1) Берём первый выделенный объект
+            // 1) Получаем выбранный объект (первый)
             int selCount = 0;
             try { selCount = theUI.SelectionManager.GetNumSelectedObjects(); } catch { selCount = 0; }
 
             if (selCount == 0)
             {
-                theUI.NXMessageBox.Show("Выделение",
-                    NXMessageBox.DialogType.Warning,
-                    "Ничего не выделено в CAM Navigator. Выберите программу (NCGroup) или операцию внутри неё.");
+                theUI.NXMessageBox.Show("Выделение", NXMessageBox.DialogType.Warning,
+                    "Ничего не выделено. Выберите NCGroup (программу) или операцию внутри неё.");
                 return;
             }
 
-            TaggedObject selected = theUI.SelectionManager.GetSelectedTaggedObject(0);
+            TaggedObject selected = null;
+            try { selected = theUI.SelectionManager.GetSelectedTaggedObject(0); } catch { selected = null; }
+            if (selected == null)
+            {
+                theUI.NXMessageBox.Show("Ошибка", NXMessageBox.DialogType.Error, "Не удалось получить выбранный объект.");
+                return;
+            }
 
-            // 2) Определяем стартовую группу:
+            // 2) Определяем стартовую NCGroup: если выделена операция — ищем родительскую группу
             NCGroup startGroup = selected as NCGroup;
             if (startGroup == null)
             {
                 NXOpen.CAM.Operation selOp = selected as NXOpen.CAM.Operation;
-                if (selOp == null)
+                if (selOp != null)
                 {
-                    theUI.NXMessageBox.Show("CAM Program Structure",
-                        NXMessageBox.DialogType.Warning,
-                        "Выберите NCGroup (программу) или операцию внутри программы.");
-                    return;
+                    NCGroup root = null;
+                    try { root = workPart.CAMSetup.GetRoot(CAMSetup.View.ProgramOrder); } catch { root = null; }
+
+                    if (root == null)
+                    {
+                        theUI.NXMessageBox.Show("Ошибка", NXMessageBox.DialogType.Error, "Не удалось получить корень ProgramOrder.");
+                        return;
+                    }
+
+                    startGroup = FindOwningGroupForOperation(root, selOp);
+                    if (startGroup == null)
+                    {
+                        theUI.NXMessageBox.Show("Ошибка", NXMessageBox.DialogType.Warning, "Не удалось найти группу, содержащую выбранную операцию.");
+                        return;
+                    }
                 }
-
-                NCGroup root = null;
-                try { root = setup.GetRoot(CAMSetup.View.ProgramOrder); } catch { root = null; }
-
-                if (root == null)
+                else
                 {
-                    theUI.NXMessageBox.Show("CAM Program Structure",
-                        NXMessageBox.DialogType.Error,
-                        "Не удалось получить корень ProgramOrder.");
-                    return;
-                }
-
-                startGroup = FindOwningGroupForOperation(root, selOp);
-                if (startGroup == null)
-                {
-                    theUI.NXMessageBox.Show("CAM Program Structure",
-                        NXMessageBox.DialogType.Warning,
-                        "Не удалось найти группу, содержащую выбранную операцию.");
+                    theUI.NXMessageBox.Show("Выделение", NXMessageBox.DialogType.Warning, "Выбранный объект не является NCGroup или Operation.");
                     return;
                 }
             }
 
-            // 3) Печатаем ТОЛЬКО структуру групп, начиная с найденной
-            StringBuilder sb = new StringBuilder();
-            sb.AppendLine("=== STRUCTURE (FROM SELECTED GROUP) ===");
-            sb.AppendLine();
-            sb.AppendLine("- " + SafeName(startGroup));
-            PrintChildGroups(startGroup, sb, 1);
+            // 3) Создаём папку вывода на рабочем столе
+            string desktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+            string outputDir = SysIO.Path.Combine(desktop, "Prog output");
 
-            theSession.ListingWindow.WriteLine(sb.ToString());
+            try
+            {
+                SysIO.Directory.CreateDirectory(outputDir);
+            }
+            catch (Exception exDir)
+            {
+                theUI.NXMessageBox.Show("Ошибка папки", NXMessageBox.DialogType.Error, "Не удалось создать папку вывода: " + exDir.Message);
+                return;
+            }
 
-            // theUI.NXMessageBox.Show("CAM Program Structure",
-            //     NXMessageBox.DialogType.Information,
-            //     "Структура выбранной программы/группы выведена в Listing Window.");
+            // 4) Получаем прямых детей выбранной группы и запускаем для каждого 3 поста
+            CAMObject[] members = null;
+            try { members = startGroup.GetMembers(); } catch { members = null; }
 
+            if (members == null || members.Length == 0)
+            {
+                theUI.NXMessageBox.Show("Инфо", NXMessageBox.DialogType.Warning, "Выбранная группа не содержит дочерних элементов.");
+                return;
+            }
 
+            theSession.ListingWindow.Open();
+            theSession.ListingWindow.WriteLine("=== Batch postprocess (3 posts) для группы: " + SafeName(startGroup) + " ===");
+            theSession.ListingWindow.WriteLine("Папка вывода: " + outputDir);
+            theSession.ListingWindow.WriteLine("");
 
-            
+            CAMSetup setup = workPart.CAMSetup;
+
+            foreach (CAMObject camObj in members)
+            {
+                if (camObj == null) continue;
+
+                NCGroup childGroup = camObj as NCGroup;
+                if (childGroup == null) continue;
+
+                string fullName = SafeName(childGroup);
+
+                // Имя до первого '_' или вся строка, если '_' нет
+                string shortName;
+                int idx = fullName.IndexOf('_');
+                if (idx > 0)
+                    shortName = fullName.Substring(0, idx);
+                else
+                    shortName = fullName;
+
+                foreach (PostConfig cfg in PostConfigs)
+                {
+                    string outFile = SysIO.Path.Combine(outputDir, shortName + cfg.Extension);
+
+                    // Проверка существования и логика перезаписи
+                    if (SysIO.File.Exists(outFile))
+                    {
+                        if (overwriteChoice == -1) // ещё не спрашивали
+                        {
+                            DialogResult res = System.Windows.Forms.MessageBox.Show(
+                                "Файл:\n" + outFile + "\n\nуже существует.\nПерезаписать?\n\n" +
+                                "Да = перезаписывать все\nНет = не перезаписывать\nОтмена = спрашивать каждый раз",
+                                "Перезапись файлов",
+                                MessageBoxButtons.YesNoCancel,
+                                MessageBoxIcon.Question);
+
+                            if (res == DialogResult.Yes) overwriteChoice = 1;
+                            else if (res == DialogResult.No) overwriteChoice = 0;
+                            else overwriteChoice = -2; // спрашивать каждый раз
+                        }
+
+                        if (overwriteChoice == 0)
+                        {
+                            theSession.ListingWindow.WriteLine("✘ Пропущен (файл существует): " + outFile);
+                            continue;
+                        }
+
+                        if (overwriteChoice == -2)
+                        {
+                            DialogResult res2 = System.Windows.Forms.MessageBox.Show(
+                                "Файл:\n" + outFile + "\n\nуже существует. Перезаписать?",
+                                "Перезапись файла",
+                                MessageBoxButtons.YesNo,
+                                MessageBoxIcon.Question);
+
+                            if (res2 != DialogResult.Yes)
+                            {
+                                theSession.ListingWindow.WriteLine("✘ Пропущен (файл существует): " + outFile);
+                                continue;
+                            }
+                        }
+                    }
+
+                    try
+                    {
+                        CAMObject[] toPost = new CAMObject[] { childGroup };
+
+                        // Запуск постпроцессинга. Если в вашей версии API сигнатура отличается — поправьте соответствующие enum'ы
+                        setup.PostprocessWithSetting(
+                            toPost,
+                            cfg.PostName,
+                            outFile,
+                            CAMSetup.OutputUnits.Metric,
+                            CAMSetup.PostprocessSettingsOutputWarning.PostDefined,
+                            CAMSetup.PostprocessSettingsReviewTool.PostDefined
+                        );
+
+                        theSession.ListingWindow.WriteLine("✔ " + fullName + " (" + cfg.PostName + ") -> " + outFile);
+                    }
+                    catch (Exception exPost)
+                    {
+                        theSession.ListingWindow.WriteLine("✘ Ошибка (" + cfg.PostName + ") для " + fullName + ": " + exPost.Message);
+                    }
+                }
+            }
+
+            theUI.NXMessageBox.Show("Готово", NXMessageBox.DialogType.Information, "Постпроцессинг завершён. Файлы в папке:\n" + outputDir);
         }
         catch (Exception ex)
         {
-            UI.GetUI().NXMessageBox.Show("CamProgramStructureViewer - Error",
-                NXMessageBox.DialogType.Error, ex.ToString());
+            UI.GetUI().NXMessageBox.Show("Ошибка", NXMessageBox.DialogType.Error, ex.ToString());
         }
     }
 
     /// <summary>
-    /// Рекурсивный поиск ближайшей группы, которая содержит данную операцию.
+    /// Находит ближайшую NCGroup, содержащую данную операцию (рекурсивно).
     /// </summary>
     private static NCGroup FindOwningGroupForOperation(NCGroup group, NXOpen.CAM.Operation targetOp)
     {
@@ -118,7 +241,7 @@ public class CamProgramStructureViewer_FromSelection_FixedOperation
 
         if (members == null || members.Length == 0) return null;
 
-        // Сначала проверим прямых детей
+        // Сначала прямые дети (операции)
         for (int i = 0; i < members.Length; i++)
         {
             CAMObject m = members[i];
@@ -132,7 +255,7 @@ public class CamProgramStructureViewer_FromSelection_FixedOperation
             }
         }
 
-        // Затем углубляемся в подгруппы
+        // Затем рекурсивно в подгруппы
         for (int i = 0; i < members.Length; i++)
         {
             CAMObject m = members[i];
@@ -149,36 +272,9 @@ public class CamProgramStructureViewer_FromSelection_FixedOperation
         return null;
     }
 
-    /// <summary>
-    /// Печатает только дочерние NCGroup’ы рекурсивно (операции и прочее игнорируются).
-    /// </summary>
-    private static void PrintChildGroups(NCGroup group, StringBuilder sb, int indent)
-    {
-        if (group == null) return;
-
-        CAMObject[] members = null;
-        try { members = group.GetMembers(); } catch { members = null; }
-
-        if (members == null || members.Length == 0) return;
-
-        string prefix = new string(' ', indent * 2);
-
-        for (int i = 0; i < members.Length; i++)
-        {
-            CAMObject camObj = members[i];
-            if (camObj == null) continue;
-
-            NCGroup childGroup = camObj as NCGroup;
-            if (childGroup != null)
-            {
-                sb.AppendLine(prefix + "- " + SafeName(childGroup));
-                PrintChildGroups(childGroup, sb, indent + 1);
-            }
-        }
-    }
-
     private static string SafeName(CAMObject obj)
     {
+        if (obj == null) return "<null>";
         try
         {
             return string.IsNullOrEmpty(obj.Name) ? "<unnamed>" : obj.Name;
@@ -186,18 +282,6 @@ public class CamProgramStructureViewer_FromSelection_FixedOperation
         catch
         {
             return "<no-name>";
-        }
-    }
-
-    private static string SafeName(NCGroup grp)
-    {
-        try
-        {
-            return string.IsNullOrEmpty(grp.Name) ? "<unnamed-group>" : grp.Name;
-        }
-        catch
-        {
-            return "<no-name-group>";
         }
     }
 }
