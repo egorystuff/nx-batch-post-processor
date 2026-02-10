@@ -101,9 +101,21 @@ public class CamProgram_PrintGroupStructure
                     // Если это операция, выводим её
                     NXOpen.CAM.Operation operation = member as NXOpen.CAM.Operation;
                     if (operation != null)
-                    {
-                        theSession.ListingWindow.WriteLine(indent + "  Операция: " + SafeName(operation));
-                    }
+                  {
+                      theSession.ListingWindow.WriteLine(indent + "  Операция: " + SafeName(operation));
+
+                      NXOpen.CAM.Tool tool = operation.ParentMachineTool as NXOpen.CAM.Tool;
+
+                      if (tool != null)
+                      {
+                          theSession.ListingWindow.WriteLine(indent + "    Инструмент: " + SafeName(tool));
+                          // PrintToolData(tool, indent + "      ");
+                      }
+                      else
+                      {
+                          theSession.ListingWindow.WriteLine(indent + "    Инструмент: <нет>");
+                      }
+                  }
                 }
             }
         }
@@ -140,4 +152,44 @@ public class CamProgram_PrintGroupStructure
         }
         return null;
     }
+
+
+
+
+// private static void PrintToolData(NXOpen.CAM.Tool tool, string indent)
+// {
+//     try
+//     {
+//         CAMSetup setup = workPart.CAMSetup;
+
+//         NXOpen.CAM.ToolBuilder builder =
+//             setup.CAMGroupCollection.CreateToolBuilder(tool);
+
+//         theSession.ListingWindow.WriteLine(indent + "ToolNumber: " + builder.ToolNumber);
+
+//         // диаметр
+//         try
+//         {
+//             double d = builder.DiameterBuilder.Value;
+//             theSession.ListingWindow.WriteLine(indent + "Diameter: " + d);
+//         }
+//         catch { }
+
+//         // вылет
+//         try
+//         {
+//             double g = builder.GaugeLengthBuilder.Value;
+//             theSession.ListingWindow.WriteLine(indent + "GaugeLength: " + g);
+//         }
+//         catch { }
+
+//         builder.Destroy();
+//     }
+//     catch (Exception ex)
+//     {
+//         theSession.ListingWindow.WriteLine(indent + "Ошибка чтения инструмента: " + ex.Message);
+//     }
+// }
+
+
 }
