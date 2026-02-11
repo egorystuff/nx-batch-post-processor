@@ -2,6 +2,7 @@ using System;
 using System.Windows.Forms;
 using NXOpen;
 using NXOpen.CAM;
+using NXOpen.UF;
 
 public class CamProgram_PrintGroupStructure
 {
@@ -109,7 +110,9 @@ public class CamProgram_PrintGroupStructure
                       if (tool != null)
                       {
                           theSession.ListingWindow.WriteLine(indent + "    Инструмент: " + SafeName(tool));
-                          // PrintToolData(tool, indent + "      ");
+
+                          // DumpAllParams(operation, indent + "      ");
+                          // DumpTool(tool, indent + "      ");
                       }
                       else
                       {
@@ -156,40 +159,79 @@ public class CamProgram_PrintGroupStructure
 
 
 
-// private static void PrintToolData(NXOpen.CAM.Tool tool, string indent)
+//     private static void DumpTool(NXOpen.CAM.Tool tool, string indent)
 // {
+//     if (tool == null) return;
+
+//     var type = tool.GetType();
+//     var props = type.GetProperties();
+
+//     theSession.ListingWindow.WriteLine(indent + "Тип инструмента: " + type.FullName);
+
+//     foreach (var p in props)
+//     {
+//         try
+//         {
+//             object val = p.GetValue(tool, null);
+//             string valueStr = val == null ? "null" : val.ToString();
+
+//             theSession.ListingWindow.WriteLine(indent + p.Name + " = " + valueStr);
+//         }
+//         catch
+//         {
+//             theSession.ListingWindow.WriteLine(indent + p.Name + " = <ошибка>");
+//         }
+//     }
+// }
+
+
+
+// private static void DumpAllParams(NXOpen.CAM.Operation op, string indent)
+// {
+//     theSession.ListingWindow.WriteLine(indent + "=== PARAM DUMP ===");
+
 //     try
 //     {
-//         CAMSetup setup = workPart.CAMSetup;
+//         string[] names = op.GetParameterNames();
 
-//         NXOpen.CAM.ToolBuilder builder =
-//             setup.CAMGroupCollection.CreateToolBuilder(tool);
-
-//         theSession.ListingWindow.WriteLine(indent + "ToolNumber: " + builder.ToolNumber);
-
-//         // диаметр
-//         try
+//         foreach (string n in names)
 //         {
-//             double d = builder.DiameterBuilder.Value;
-//             theSession.ListingWindow.WriteLine(indent + "Diameter: " + d);
-//         }
-//         catch { }
+//             try
+//             {
+//                 int type = op.GetParameterType(n);
 
-//         // вылет
-//         try
-//         {
-//             double g = builder.GaugeLengthBuilder.Value;
-//             theSession.ListingWindow.WriteLine(indent + "GaugeLength: " + g);
-//         }
-//         catch { }
+//                 switch (type)
+//                 {
+//                     case 1: // int
+//                         theSession.ListingWindow.WriteLine(indent + n + " = " + op.GetIntegerValue(n));
+//                         break;
 
-//         builder.Destroy();
+//                     case 2: // double
+//                         theSession.ListingWindow.WriteLine(indent + n + " = " + op.GetRealValue(n));
+//                         break;
+
+//                     case 3: // string
+//                         theSession.ListingWindow.WriteLine(indent + n + " = " + op.GetStringValue(n));
+//                         break;
+
+//                     default:
+//                         theSession.ListingWindow.WriteLine(indent + n + " (type " + type + ")");
+//                         break;
+//                 }
+//             }
+//             catch { }
+//         }
 //     }
 //     catch (Exception ex)
 //     {
-//         theSession.ListingWindow.WriteLine(indent + "Ошибка чтения инструмента: " + ex.Message);
+//         theSession.ListingWindow.WriteLine(indent + "Dump error: " + ex.Message);
 //     }
 // }
+
+
+
+
+
 
 
 }
