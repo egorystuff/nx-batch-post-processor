@@ -9,6 +9,7 @@ public class CamProgram_PrintGroupStructure
     public static Session theSession;
     public static UI theUI;
     public static Part workPart;
+    public static UFSession ufSession;
 
     public static void Main(string[] args)
     {
@@ -17,8 +18,8 @@ public class CamProgram_PrintGroupStructure
             theSession = Session.GetSession();
             theUI = UI.GetUI();
             workPart = theSession.Parts.Work;
+            ufSession = UFSession.GetUFSession();
 
-            // Проверка на наличие активной детали и CAM Setup
             if (workPart == null || workPart.CAMSetup == null)
             {
                 theUI.NXMessageBox.Show("Ошибка", NXMessageBox.DialogType.Error, "Нет активной детали или CAM Setup.");
@@ -32,7 +33,6 @@ public class CamProgram_PrintGroupStructure
                 return;
             }
 
-            // Получаем выбранный объект
             TaggedObject selected = theUI.SelectionManager.GetSelectedTaggedObject(0);
             if (selected == null)
             {
@@ -41,7 +41,6 @@ public class CamProgram_PrintGroupStructure
                 return;
             }
 
-            // Определяем стартовую группу
             NCGroup startGroup = selected as NCGroup;
             if (startGroup == null)
             {
@@ -59,13 +58,11 @@ public class CamProgram_PrintGroupStructure
                 return;
             }
 
-            // Открываем окно вывода и начинаем логирование
             theSession.ListingWindow.Open();
             theSession.ListingWindow.WriteLine("=== Структура выбранной CAM группы ===");
             theSession.ListingWindow.WriteLine("Группа: " + SafeName(startGroup));
             theSession.ListingWindow.WriteLine("");
 
-            // Рекурсивный обход группы и вывод всех дочерних объектов
             PrintGroupStructure(startGroup, 0);
         }
         catch (Exception ex)
@@ -74,24 +71,18 @@ public class CamProgram_PrintGroupStructure
         }
     }
 
-    // Рекурсивный метод для обхода и вывода всех объектов в группе
     private static void PrintGroupStructure(NCGroup group, int indentLevel)
     {
         if (group == null) return;
 
-        // Отступы для правильного отображения вложенности
         string indent = new string(' ', indentLevel * 2);
-
-        // Логируем имя группы
         theSession.ListingWindow.WriteLine(indent + "Группа: " + SafeName(group));
 
-        // Получаем и обрабатываем все члены группы
         CAMObject[] members = group.GetMembers();
         if (members != null)
         {
             foreach (CAMObject member in members)
             {
-                // Если объект - это еще одна группа, рекурсивно обрабатываем её
                 NCGroup childGroup = member as NCGroup;
                 if (childGroup != null)
                 {
@@ -99,32 +90,112 @@ public class CamProgram_PrintGroupStructure
                 }
                 else
                 {
-                    // Если это операция, выводим её
                     NXOpen.CAM.Operation operation = member as NXOpen.CAM.Operation;
                     if (operation != null)
-                  {
-                      theSession.ListingWindow.WriteLine(indent + "  Операция: " + SafeName(operation));
+                    {
+                        theSession.ListingWindow.WriteLine(indent + "▶ Операция: " + SafeName(operation));
+                        theSession.ListingWindow.WriteLine(indent + "  ───────────────────────────────────────────────────────────");
 
-                      NXOpen.CAM.Tool tool = operation.ParentMachineTool as NXOpen.CAM.Tool;
+                        // Вывод информации об инструменте
+                        NXObject toolObj = operation.ParentMachineTool;
+                        if (toolObj != null)
+                        {
+                            DumpToolInfo(toolObj, indent + "  ");
+                        }
+                        else
+                        {
+                            theSession.ListingWindow.WriteLine(indent + "  Инструмент: <нет>");
+                        }
 
-                      if (tool != null)
-                      {
-                          theSession.ListingWindow.WriteLine(indent + "    Инструмент: " + SafeName(tool));
-
-                          // DumpAllParams(operation, indent + "      ");
-                          // DumpTool(tool, indent + "      ");
-                      }
-                      else
-                      {
-                          theSession.ListingWindow.WriteLine(indent + "    Инструмент: <нет>");
-                      }
-                  }
+                        theSession.ListingWindow.WriteLine("");
+                    }
                 }
             }
         }
     }
 
-    // Метод для безопасного получения имени объекта
+    private static void DumpToolInfo(NXObject toolObj, string indent)
+    {
+        if (toolObj == null) return;
+
+        string toolName = SafeName(toolObj as CAMObject);
+        theSession.ListingWindow.WriteLine(indent + "mom_oper_tool".PadRight(30) + " : " + toolName);
+
+        Tag toolTag = toolObj.Tag;
+
+        // Получаем тип инструмента
+        int toolType, toolSubtype;
+        ufSession.Cutter.AskTypeAndSubtype(toolTag, out toolType, out toolSubtype);
+        theSession.ListingWindow.WriteLine(indent + "Тип инструмента: " + toolType + ", подтип: " + toolSubtype);
+
+        // Пробуем получить параметры инструмента
+        DumpAllToolParameters(toolTag, indent);
+    }
+
+    private static void DumpAllToolParameters(Tag toolTag, string indent)
+    {
+        // Пробуем разные диапазоны индексов
+        int[] paramIndices = new int[] 
+        {
+            1038, // UF_PARAM_TL_NUMBER
+            1039, // UF_PARAM_TL_DIAMETER
+            1040, // UF_PARAM_TL_COR1_RAD
+            1041, // UF_PARAM_TL_LENGTH
+            1042, // UF_PARAM_TL_FLUTE_LENGTH
+            1064, // UF_PARAM_TL_DESCR
+            1105, // UF_PARAM_TL_EXT_LENGTH
+            1070, // UF_PARAM_TL_POINT_ANG
+            1071, 1072, 1073, 1074, 1075,
+            1080, 1081, 1082, 1083, 1084, 1085,
+            1090, 1091, 1092, 1093, 1094, 1095,
+            1100, 1101, 1102, 1103, 1104, 1106, 1107, 1108, 1109, 1110
+        };
+
+        string[] paramNames = new string[] 
+        {
+            "mom_tool_number",
+            "mom_tool_diameter",
+            "mom_tool_corner_radius",
+            "mom_tool_length",
+            "mom_tool_flute_length",
+            "mom_tool_description",
+            "mom_tool_extension_length",
+            "mom_tool_tip_angle",
+            "param_1071", "param_1072", "param_1073", "param_1074", "param_1075",
+            "param_1080", "param_1081", "param_1082", "param_1083", "param_1084", "param_1085",
+            "param_1090", "param_1091", "param_1092", "param_1093", "param_1094", "param_1095",
+            "param_1100", "param_1101", "param_1102", "param_1103", "param_1104", "param_1106", "param_1107", "param_1108", "param_1109", "param_1110"
+        };
+
+        for (int i = 0; i < paramIndices.Length; i++)
+        {
+            // Пробуем как double
+            try
+            {
+                double dValue;
+                ufSession.Param.AskDoubleValue(toolTag, paramIndices[i], out dValue);
+                if (Math.Abs(dValue) > 0.0001)
+                {
+                    theSession.ListingWindow.WriteLine(indent + paramNames[i].PadRight(30) + " : " + dValue.ToString("F3"));
+                    continue;
+                }
+            }
+            catch { }
+
+            // Пробуем как int
+            try
+            {
+                int iValue;
+                ufSession.Param.AskIntValue(toolTag, paramIndices[i], out iValue);
+                if (iValue != 0)
+                {
+                    theSession.ListingWindow.WriteLine(indent + paramNames[i].PadRight(30) + " : " + iValue.ToString());
+                }
+            }
+            catch { }
+        }
+    }
+
     private static string SafeName(CAMObject obj)
     {
         if (obj == null) return "<null>";
@@ -132,7 +203,6 @@ public class CamProgram_PrintGroupStructure
         catch { return "<no-name>"; }
     }
 
-    // Метод для поиска группы, содержащей операцию
     private static NCGroup FindOwningGroupForOperation(NCGroup group, NXOpen.CAM.Operation targetOp)
     {
         if (group == null || targetOp == null) return null;
@@ -155,83 +225,4 @@ public class CamProgram_PrintGroupStructure
         }
         return null;
     }
-
-
-
-
-//     private static void DumpTool(NXOpen.CAM.Tool tool, string indent)
-// {
-//     if (tool == null) return;
-
-//     var type = tool.GetType();
-//     var props = type.GetProperties();
-
-//     theSession.ListingWindow.WriteLine(indent + "Тип инструмента: " + type.FullName);
-
-//     foreach (var p in props)
-//     {
-//         try
-//         {
-//             object val = p.GetValue(tool, null);
-//             string valueStr = val == null ? "null" : val.ToString();
-
-//             theSession.ListingWindow.WriteLine(indent + p.Name + " = " + valueStr);
-//         }
-//         catch
-//         {
-//             theSession.ListingWindow.WriteLine(indent + p.Name + " = <ошибка>");
-//         }
-//     }
-// }
-
-
-
-// private static void DumpAllParams(NXOpen.CAM.Operation op, string indent)
-// {
-//     theSession.ListingWindow.WriteLine(indent + "=== PARAM DUMP ===");
-
-//     try
-//     {
-//         string[] names = op.GetParameterNames();
-
-//         foreach (string n in names)
-//         {
-//             try
-//             {
-//                 int type = op.GetParameterType(n);
-
-//                 switch (type)
-//                 {
-//                     case 1: // int
-//                         theSession.ListingWindow.WriteLine(indent + n + " = " + op.GetIntegerValue(n));
-//                         break;
-
-//                     case 2: // double
-//                         theSession.ListingWindow.WriteLine(indent + n + " = " + op.GetRealValue(n));
-//                         break;
-
-//                     case 3: // string
-//                         theSession.ListingWindow.WriteLine(indent + n + " = " + op.GetStringValue(n));
-//                         break;
-
-//                     default:
-//                         theSession.ListingWindow.WriteLine(indent + n + " (type " + type + ")");
-//                         break;
-//                 }
-//             }
-//             catch { }
-//         }
-//     }
-//     catch (Exception ex)
-//     {
-//         theSession.ListingWindow.WriteLine(indent + "Dump error: " + ex.Message);
-//     }
-// }
-
-
-
-
-
-
-
 }
